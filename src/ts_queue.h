@@ -3,7 +3,6 @@
 
 #include <pthread.h>
 
-// You can change this or make it dynamic later
 #define QUEUE_MAX_SIZE 100
 
 // The generic Thread-Safe Queue structure
@@ -25,4 +24,4 @@ int  queue_read(ts_queue_t* q, void** data_ptr);
 void queue_shutdown(ts_queue_t* q);
 void queue_destroy(ts_queue_t* q);
 
-#endif // TS_QUEUE_H
+#endif

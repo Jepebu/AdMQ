@@ -18,4 +18,7 @@ void pubsub_unsubscribe_all(int client_index);
 // Sends a message to all clients subscribed to the topic
 void pubsub_publish(const char* topic_name, const char* message);
 
+// Prints status info
+void pubsub_print_status();
+
 #endif

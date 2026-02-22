@@ -1,0 +1,12 @@
+test*
+dev/
+*.key
+*.crt
+*.csr
+*.srl
+*.db
+actions/*
+agent
+message_broker
+*.o
+*.swp

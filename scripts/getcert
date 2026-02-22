@@ -1,0 +1,14 @@
+#!/bin/bash
+
+
+### Test script for acquiring a signed certificate from the server. ###
+
+openssl genrsa -out certs/client.key 2048
+CSR=$(openssl req -new -key certs/client.key -subj "/CN=localhost")
+
+
+OUTPUT=$((echo "ENROLL localhost"; echo "$CSR") | nc localhost 35566)
+
+read -r RESULT <<< $OUTPUT
+echo $RESULT
+/bin/echo -e "$OUTPUT" | tail -n+2 > certs/client.crt

@@ -1,0 +1,10 @@
+#!/bin/bash
+
+### Test script for connecting directly to the server using as a client. ###
+
+SERVER_PORT=35565
+CRT=certs/agent.crt
+KEY=certs/agent.key
+CA=certs/ca.crt
+
+openssl s_client -quiet -connect 127.0.0.1:35565 -cert $CRT -key $KEY -CAfile $CA

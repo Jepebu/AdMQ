@@ -1,5 +1,6 @@
 #include "pubsub.h"
 #include "client_manager.h" // We need this to get the sockets to write to
+#include <openssl/ssl.h>
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
@@ -25,7 +26,7 @@ void pubsub_subscribe(int client_index, const char* topic_name) {
 
     Topic* target_topic = NULL;
 
-    // 1. Check if the topic already exists
+    // Check if the topic already exists
     for (int i = 0; i < topic_count; i++) {
         if (strcmp(topics[i].name, topic_name) == 0) {
             target_topic = &topics[i];
@@ -33,7 +34,7 @@ void pubsub_subscribe(int client_index, const char* topic_name) {
         }
     }
 
-    // 2. If it doesn't exist, create it (if we have space)
+    // If it doesn't exist, create it (if we have space)
     if (target_topic == NULL && topic_count < MAX_TOPICS) {
         target_topic = &topics[topic_count];
         strncpy(target_topic->name, topic_name, 63);
@@ -42,7 +43,7 @@ void pubsub_subscribe(int client_index, const char* topic_name) {
         topic_count++;
     }
 
-    // 3. Add the client to the topic (avoiding duplicates)
+    // Add the client to the topic (avoiding duplicates)
     if (target_topic != NULL && target_topic->sub_count < MAX_SUBSCRIBERS_PER_TOPIC) {
         int already_subscribed = 0;
         for (int i = 0; i < target_topic->sub_count; i++) {
@@ -66,15 +67,15 @@ void pubsub_subscribe(int client_index, const char* topic_name) {
 void pubsub_unsubscribe(int client_index, const char* topic_name) {
     pthread_mutex_lock(&pubsub_lock);
 
-    // 1. Find the requested topic
+    // Find the requested topic
     for (int i = 0; i < topic_count; i++) {
         if (strcmp(topics[i].name, topic_name) == 0) {
 
-            // 2. Found the topic! Now find the client in the subscriber list
+            // Found the topic! Now find the client in the subscriber list
             for (int j = 0; j < topics[i].sub_count; j++) {
                 if (topics[i].subscribers[j] == client_index) {
 
-                    // 3. Found the client! Shift the rest of the array down to fill the gap
+                    // Found the client! Shift the rest of the array down to fill the gap
                     for (int k = j; k < topics[i].sub_count - 1; k++) {
                         topics[i].subscribers[k] = topics[i].subscribers[k + 1];
                     }
@@ -121,18 +122,48 @@ void pubsub_publish(const char* topic_name, const char* message) {
 
     for (int i = 0; i < topic_count; i++) {
         if (strcmp(topics[i].name, topic_name) == 0) {
-            // Found the topic! Send the message to all subscribers.
+
+            // Found the topic - send the message to all subscribers.
             for (int j = 0; j < topics[i].sub_count; j++) {
                 int client_idx = topics[i].subscribers[j];
-                int fd = client_get_socket(client_idx);
 
-                if (fd > 0) {
-                    write(fd, formatted_msg, msg_len);
+                // Get the SSL tunnel instead
+                SSL* ssl = client_get_ssl(client_idx);
+
+                if (ssl != NULL) {
+                    SSL_write(ssl, formatted_msg, msg_len);
+                } else {
+                    // Fallback just in case a client isn't fully TLS-established yet
+                    int fd = client_get_socket(client_idx);
+                    if (fd > 0) {
+                        write(fd, formatted_msg, msg_len);
+                    }
                 }
             }
             break;
         }
     }
 
+    pthread_mutex_unlock(&pubsub_lock);
+}
+
+
+// Add this function at the bottom of the file
+void pubsub_print_status() {
+    pthread_mutex_lock(&pubsub_lock);
+    printf("\n=== ACTIVE TOPICS ===\n");
+    int count = 0;
+    for (int i = 0; i < topic_count; i++) {
+        if (topics[i].sub_count > 0) {
+            count++;
+            printf("  [%s]: ", topics[i].name);
+            for (int j = 0; j < topics[i].sub_count; j++) {
+                printf("ID:%d ", topics[i].subscribers[j]);
+            }
+            printf("\n");
+        }
+    }
+    if (count == 0) printf("  No active subscriptions.\n");
+    printf("=====================\n\n");
     pthread_mutex_unlock(&pubsub_lock);
 }

@@ -2,7 +2,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
+#include "db.h"
+#include "enroll.h"
+#include "tls.h"
 #include "auth.h"
 #include "worker.h"
 #include "client_manager.h"
@@ -15,105 +20,171 @@ void* worker_thread(void* arg) {
         Task* task;
         if (!queue_read(&task_queue, (void**)&task)) break;
 
-        char temp_buf[1024];
-        ssize_t bytes_read = read(task->client_fd, temp_buf, sizeof(temp_buf));
+        int conn_type = client_get_conn_type(task->client_index);
 
-        if (bytes_read <= 0) {
-            printf("[Worker %d] Client %d disconnected.\n", my_id, task->client_index);
-            pubsub_unsubscribe_all(task->client_index);
-            client_remove(task->client_index);
-        } else {
 
-            // 1. Append the raw chunks of data to the client's persistent buffer
-            client_buffer_append(task->client_index, temp_buf, bytes_read);
+        if (conn_type == CONN_VAULT) {
 
-            char complete_message[1024];
-            int should_disconnect = 0;
+            // Fetch the SSL session for this client
+            SSL *ssl = client_get_ssl(task->client_index);
 
-            // 2. Loop to extract AS MANY complete messages as we can find
-            while (client_buffer_extract_line(task->client_index, complete_message, sizeof(complete_message))) {
 
-                // Strip carriage returns (\r) if the client is using Windows Telnet/netcat
-                complete_message[strcspn(complete_message, "\r")] = 0;
+            if (ssl == NULL) {
+                printf("[Worker %d] Initiating TLS Handshake for client %d...\n", my_id, task->client_index);
 
-                // Ignore empty lines
-                if (strlen(complete_message) == 0) continue;
+                // Create a new SSL session from our global factory
+                ssl = SSL_new(tls_get_context());
 
-                printf("[Worker %d] Parsed Command: '%s'\n", my_id, complete_message);
+                // Bind the raw network socket to the SSL session
+                SSL_set_fd(ssl, task->client_fd);
 
-                char command[32] = {0};
-                char topic[64] = {0};
-                char payload[800] = {0};
+                // Perform the Handshake (this blocks until the client sends their certificate)
+                if (SSL_accept(ssl) <= 0) {
+                    ERR_print_errors_fp(stderr);
+                    printf("[Worker %d] ERROR: TLS Handshake failed.\n", my_id);
 
-                int parsed_items = sscanf(complete_message, "%31s %63s %799[^\n]", command, topic, payload);
-                char response[256];
+                    SSL_free(ssl); // Free the failed session
+                    client_remove(task->client_index); // Disconnect them
+                } else {
 
-                int is_authenticated = (client_get_auth(task->client_index) == AUTH_SUCCESS);
+                    // AUTO-REGISTRATION
+                    char client_cn[256] = {0};
 
-                if (parsed_items >= 2 && strcmp(command, "REGISTER") == 0) {
-                    if (is_authenticated) {
-                        snprintf(response, sizeof(response), "Already registered.\n");
-                        write(task->client_fd, response, strlen(response));
-                        continue;
-                    }
+                    if (auth_verify_mtls(task->client_fd, ssl, client_cn, sizeof(client_cn))) {
+                        printf("[Worker %d] mTLS SUCCESS! Secure tunnel established for %s.\n", my_id, client_cn);
 
-                    char* claimed_hostname = topic;
+                        // Save the session
+                        client_set_ssl(task->client_index, ssl);
 
-                    // Call our new clean, abstracted auth function
-                    if (auth_verify_identity(task->client_fd, claimed_hostname)) {
-
-                        // UPGRADE THEIR STATUS TO SUCCESS!
+                        // GRANT FULL ACCESS IF THEY HAVE A CERT
                         client_set_auth(task->client_index, AUTH_SUCCESS);
+                        client_set_state(task->client_index, STATE_IDLE);
+                        client_set_hostname(task->client_index, client_cn);
 
-                        snprintf(response, sizeof(response), "SUCCESS: Identity verified for %s. Welcome!\n", claimed_hostname);
-                        write(task->client_fd, response, strlen(response));
+                        // Send a welcome message
+                        char welcome[512];
+                        snprintf(welcome, sizeof(welcome), "SUCCESS: Auto-registered as %s via mTLS.\n", client_cn);
+                        SSL_write(ssl, welcome, strlen(welcome));
 
                     } else {
-                        snprintf(response, sizeof(response), "ERROR: Security violation. IP mismatch or DNS failure for %s.\n", claimed_hostname);
-                        write(task->client_fd, response, strlen(response));
-
-                        printf("[Worker %d] Disconnecting imposter.\n", my_id);
-                        should_disconnect = 1;
-                        break;
+                        printf("[Worker %d] ERROR: mTLS Identity Verification failed for %s.\n", my_id, client_cn);
+                        SSL_shutdown(ssl);
+                        SSL_free(ssl);
+                        client_remove(task->client_index);
                     }
-
-                } else if (!is_authenticated) {
-                    // IF THEY ARE NOT AUTHENTICATED, REJECT EVERYTHING ELSE
-                    snprintf(response, sizeof(response), "ERROR: Unauthorized. You must REGISTER first.\n");
-                    write(task->client_fd, response, strlen(response));
-
-                } else if (parsed_items >= 2 && strcmp(command, "SUBSCRIBE") == 0) {
-                    pubsub_subscribe(task->client_index, topic);
-                    snprintf(response, sizeof(response), "Subscribed to %s\n", topic);
-                    write(task->client_fd, response, strlen(response));
-
-                } else if (parsed_items >= 2 && strcmp(command, "UNSUBSCRIBE") == 0) {
-                    pubsub_unsubscribe(task->client_index, topic);
-                    snprintf(response, sizeof(response), "Unsubscribed from %s\n", topic);
-                    write(task->client_fd, response, strlen(response));
-
-                } else if (parsed_items == 3 && strcmp(command, "PUBLISH") == 0) {
-                    pubsub_publish(topic, payload);
-                    snprintf(response, sizeof(response), "Published to %s\n", topic);
-                    write(task->client_fd, response, strlen(response));
-
-                } else {
-                    snprintf(response, sizeof(response), "ERROR: Invalid command.\n");
-                    write(task->client_fd, response, strlen(response));
                 }
-            } // End of inner while loop
 
-
-            // 3. Safely handle the aftermath
-            if (should_disconnect) {
-                // Clean up their routing and close their socket
-                pubsub_unsubscribe_all(task->client_index);
-                client_remove(task->client_index);
-                // Notice we do NOT set them to IDLE
             } else {
-                // Only return valid clients to the select() radar
-                client_set_state(task->client_index, STATE_IDLE);
+                char temp_buf[1024];
+
+                int bytes_read = SSL_read(ssl, temp_buf, sizeof(temp_buf));
+
+                if (bytes_read <= 0) {
+                    printf("[Worker %d] Client %d disconnected (or TLS error).\n", my_id, task->client_index);
+                    pubsub_unsubscribe_all(task->client_index);
+                    client_remove(task->client_index);
+                } else {
+                    client_update_activity(task->client_index);
+
+
+                    // Append decrypted data to our command buffer
+                    client_buffer_append(task->client_index, temp_buf, bytes_read);
+
+                    char complete_message[1024];
+                    int should_disconnect = 0;
+
+                    while (client_buffer_extract_line(task->client_index, complete_message, sizeof(complete_message))) {
+                        // Strip carriage returns (\r) if the client is using Windows Telnet/netcat
+                        complete_message[strcspn(complete_message, "\r")] = 0;
+
+                        // Ignore empty lines
+                        if (strlen(complete_message) == 0) continue;
+
+                        printf("[Worker %d] Parsed Command: '%s'\n", my_id, complete_message);
+
+                        char command[32] = {0};
+                        char topic[64] = {0};
+                        char payload[800] = {0};
+
+                        int parsed_items = sscanf(complete_message, "%31s %63s %799[^\n]", command, topic, payload);
+                        char response[256];
+
+                        int is_authenticated = (client_get_auth(task->client_index) == AUTH_SUCCESS);
+
+                        if (!is_authenticated) {
+
+                            // Because of mTLS, a client should TECHNICALLY never reach this line.
+                            // I'm not taking that chance though
+                            snprintf(response, sizeof(response), "ERROR: Unauthorized.\n");
+                            SSL_write(ssl, response, strlen(response));
+                            should_disconnect = 1;
+                            break;
+
+                        } else if (parsed_items >= 1 && strcmp(command, "PING") == 0) {
+                            SSL_write(ssl, "PONG\n", 5);
+                            continue; // Skip the rest of the loop
+
+                        } else if (parsed_items >= 1 && strcmp(command, "PONG") == 0) {
+                            continue; // Just consume the pong, timestamp is already updated
+
+                        } else if (parsed_items >= 2 && strcmp(command, "SUBSCRIBE") == 0) {
+                            pubsub_subscribe(task->client_index, topic);
+                            snprintf(response, sizeof(response), "Subscribed to %s\n", topic);
+                            SSL_write(ssl, response, strlen(response));
+
+                        } else if (parsed_items >= 2 && strcmp(command, "UNSUBSCRIBE") == 0) {
+                            pubsub_unsubscribe(task->client_index, topic);
+                            snprintf(response, sizeof(response), "Unsubscribed from %s\n", topic);
+                            SSL_write(ssl, response, strlen(response));
+
+                        } else if (parsed_items == 3 && strcmp(command, "PUBLISH") == 0) {
+                            pubsub_publish(topic, payload);
+                            snprintf(response, sizeof(response), "Published to %s\n", topic);
+                            SSL_write(ssl, response, strlen(response));
+
+                            // Database logging
+                            char sender_name[128];
+                            client_get_hostname(task->client_index, sender_name, sizeof(sender_name));
+                            db_log_message(sender_name, topic, payload);
+
+                        } else {
+                            snprintf(response, sizeof(response), "ERROR: Invalid command.\n");
+                            SSL_write(ssl, response, strlen(response));
+                        }
+                    } // End of inner while loop
+
+
+                    // Safely handle the aftermath
+                    if (should_disconnect) {
+                        // Clean up their routing and close their socket
+                        pubsub_unsubscribe_all(task->client_index);
+                        client_remove(task->client_index);
+                    } else {
+                       // Only return valid clients to the select() radar
+                        client_set_state(task->client_index, STATE_IDLE);
+                    }
+               }
+           }
+
+        } else if (conn_type == CONN_LOBBY) {
+
+            // We use a 4096-byte buffer here to ensure we catch the entire CSR
+            // text in a single read (CSRs are usually around 1KB).
+            char temp_buf[4096];
+            int bytes_read = read(task->client_fd, temp_buf, sizeof(temp_buf) - 1);
+
+            if (bytes_read <= 0) {
+                printf("[Worker %d] Lobby client disconnected.\n", my_id);
+            } else {
+                temp_buf[bytes_read] = '\0';
+
+                // Pass the raw text off to our new enrollment module
+                process_enrollment(task->client_fd, temp_buf);
             }
+
+            // The enrollment port is strictly one-and-done.
+            // Whether it succeeded or failed, always boot them out immediately.
+            client_remove(task->client_index);
         }
         free(task);
     }
