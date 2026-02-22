@@ -13,7 +13,7 @@ Instead of relying on passwords or vulnerable SSH ports, AdMQ uses **Mutual TLS 
 * **Daemon-Ready:** Automatically detects when it is being run by systemd and safely disables the interactive CLI to run invisibly in the background.  
 * **Dynamic INI Configuration:** Fully configurable via broker.ini and agent.ini files.
 
-## **rerequisites**
+## **Prerequisites**
 
 To build AdMQ, you need the standard C build tools, OpenSSL, and SQLite3 development headers installed on your system.  
 **Ubuntu / Debian:**  
@@ -35,7 +35,7 @@ make
 * make agent \- Compiles only the edge agent.  
 * make clean \- Wipes all compiled binaries and object (.o) files.
 
-## **onfiguration**
+## **Configuration**
 
 AdMQ relies on standard .ini files for runtime configuration.
 
