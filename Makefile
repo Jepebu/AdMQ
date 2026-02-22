@@ -11,7 +11,7 @@ BROKER_BIN = message_broker
 AGENT_BIN = agent
 
 # --- Source Files ---
-BROKER_SRCS = src/main.c src/ts_queue.c src/client_manager.c src/worker.c src/pubsub.c src/auth.c src/tls.c src/enroll.c src/cli.c src/heartbeat.c src/db.c src/config.c
+BROKER_SRCS = src/main.c src/ts_queue.c src/client_manager.c src/worker.c src/pubsub.c src/auth.c src/tls.c src/enroll.c src/cli.c src/heartbeat.c src/db.c src/config.c src/tokenizer.c
 AGENT_SRCS = src/agent.c src/agent_config.c
 
 # --- Object Files ---

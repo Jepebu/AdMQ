@@ -1,6 +1,8 @@
 #include "cli.h"
 #include "pubsub.h"
 #include "client_manager.h"
+#include "tokenizer.h"
+
 #include <unistd.h>
 #include <termios.h>
 #include <stdio.h>
@@ -214,13 +216,13 @@ char* get_input(const char* prompt) {
   return buffer; // Return the pointer
 }
 
-// --- NEW: THE THREAD LOOP ---
+// --- THE THREAD LOOP ---
 void* admin_cli_thread(void* arg) {
     // Give the server a second to print its startup logs before showing the prompt
     usleep(500000);
 
     while (1) {
-        char* input = get_input("JepMQ> ");
+        char* input = get_input("admq> ");
 
         if (input == NULL || strlen(input) == 0) {
             free(input);
@@ -231,28 +233,73 @@ void* admin_cli_thread(void* arg) {
         char topic[64] = {0};
         char payload[800] = {0};
 
-        int parsed = sscanf(input, "%31s %63s %799[^\n]", cmd, topic, payload);
+        // Tokenize the input
+        char **argv = NULL;
+        int argc = tokenize_command(input, &argv);
 
-        if (strcmp(cmd, "STATUS") == 0) {
-            client_manager_print_status();
-            pubsub_print_status();
-        }
-        else if (parsed == 3 && strcmp(cmd, "PUBLISH") == 0) {
-            pubsub_publish(topic, payload);
-            printf("[Admin] Message dispatched to topic '%s'\n", topic);
-        }
-        else if (strcmp(cmd, "EXIT") == 0) {
-            printf("Shutting down CLI...\n");
-            free(input);
-            exit(0); // Forcibly shutdown the broker
-        }
-        else {
-            printf("[Admin Error] Invalid command.\n");
-            printf("  Usage: PUBLISH <topic> <message>\n");
-            printf("  Usage: STATUS\n");
-            printf("  Usage: EXIT\n");
+        if (argc > 0) {
+            if (strcmp(argv[0], "STATUS") == 0) {
+                client_manager_print_status();
+                pubsub_print_status();
+            }
+            else if (strcmp(argv[0], "PUBLISH") == 0 && argc >= 3) {
+                char topic[64];
+                char payload[800] = {0};
+                strncpy(topic, argv[1], 63);
+
+                // Reconstruct the payload (handles both quoted and unquoted messages)
+                for (int i = 2; i < argc; i++) {
+                    strcat(payload, argv[i]);
+                    if (i < argc - 1) strcat(payload, " ");
+                }
+
+                pubsub_publish(topic, payload);
+                printf("[Admin] Message dispatched to topic '%s'\n", topic);
+            }
+            else if (strcmp(argv[0], "SET") == 0 && argc >= 4) {
+                // Allows the admin to manually inject state via the console
+                // Usage: SET <hostname> <key> <value>
+                char target_host[128], key[64], value[256] = {0};
+                strncpy(target_host, argv[1], 127);
+                strncpy(key, argv[2], 63);
+
+                for (int i = 3; i < argc; i++) {
+                    strcat(value, argv[i]);
+                    if (i < argc - 1) strcat(value, " ");
+                }
+
+                db_set_device_state(target_host, key, value);
+                printf("[Admin] State manually updated for %s.\n", target_host);
+
+            } else if (strcmp(argv[0], "GET") == 0 && argc == 3) {
+                // Usage: GET <hostname> <key>
+                char target_host[128], key[64], value[256] = {0};
+                strncpy(target_host, argv[1], 127);
+                strncpy(key, argv[2], 63);
+
+                if (db_get_device_state(target_host, key, value, sizeof(value))) {
+                    printf("[Admin] %s -> %s = %s\n", target_host, key, value);
+                } else {
+                    printf("[Admin Error] State key '%s' not found for '%s'.\n", key, target_host);
+                }
+
+            } else if (strcmp(argv[0], "EXIT") == 0) {
+                printf("Shutting down CLI...\n");
+                free_tokens(argv, argc); // Clean up before exit
+                free(input);
+                exit(0);
+
+            } else {
+                printf("[Admin Error] Invalid command or missing arguments.\n");
+                printf("  Usage: PUBLISH <topic> <\"message\">\n");
+                printf("  Usage: SET <hostname> <key> <\"value\">\n");
+                printf("  Usage: STATUS\n");
+                printf("  Usage: EXIT\n");
+            }
         }
 
+        // Clean up memory
+        free_tokens(argv, argc);
         free(input);
     }
     return NULL;

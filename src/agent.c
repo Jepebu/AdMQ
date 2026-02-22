@@ -166,7 +166,35 @@ SSL_CTX* create_client_context(const char* cert_path, const char* key_path, cons
 }
 
 
-int main() {
+int main(int argc, char* argv[]) {
+    signal(SIGCHLD, SIG_IGN);
+
+    // Command Line Argument Parsing
+    int oneshot_mode = 0;
+    int is_set = 0, is_get = 0;
+    char target_key[64] = {0};
+    char target_val[256] = {0};
+
+    // Very simple parser for: ./agent set --key <K> --value <V>
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "set") == 0) { oneshot_mode = 1; is_set = 1; }
+        if (strcmp(argv[i], "get") == 0) { oneshot_mode = 1; is_get = 1; }
+        if (strcmp(argv[i], "--key") == 0 && i + 1 < argc) strncpy(target_key, argv[++i], 63);
+        if (strcmp(argv[i], "--value") == 0 && i + 1 < argc) strncpy(target_val, argv[++i], 255);
+    }
+
+    if (oneshot_mode) {
+        if (is_set && (strlen(target_key) == 0 || strlen(target_val) == 0)) {
+            printf("Error: Missing arguments.\nUsage: %s set --key <key> --value <value>\n", argv[0]);
+            return 1;
+        }
+        if (is_get && strlen(target_key) == 0) {
+            printf("Error: Missing arguments.\nUsage: %s get --key <key>\n", argv[0]);
+            return 1;
+        }
+    }
+
+
     signal(SIGCHLD, SIG_IGN); // Prevent zombie processes
     signal(SIGINT, handle_sigint); // SIGINT handler
 
@@ -193,8 +221,8 @@ int main() {
     if (sockfd < 0) { perror("ERROR opening socket"); return 1; }
 
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(BROKER_PORT); // Ensure this is the right port
-    inet_pton(AF_INET, BROKER_IP, &serv_addr.sin_addr);
+    serv_addr.sin_port = htons(config.broker_port); // Ensure this is the right port
+    inet_pton(AF_INET, config.broker_ip, &serv_addr.sin_addr);
 
     // Connect the raw TCP socket
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
@@ -211,7 +239,34 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    printf("Agent securely connected to broker via mTLS.\n");
+    // printf("Agent securely connected to broker via mTLS.\n");
+
+    // --- One-Shot Mode Execution ---
+    if (oneshot_mode) {
+        char msg[512];
+
+        if (is_set) {
+            snprintf(msg, sizeof(msg), "SET %s %s\n", target_key, target_val);
+        } else if (is_get) {
+            snprintf(msg, sizeof(msg), "GET %s\n", target_key);
+        } else {
+            printf("[Agent] Command was not 'set' or 'get'.");
+        }
+
+        SSL_write(ssl, msg, strlen(msg));
+
+        // Wait for the SUCCESS/VALUE acknowledgment from the server
+        char ack_buf[256] = {0};
+        SSL_read(ssl, ack_buf, sizeof(ack_buf) - 1);
+        printf("%s", ack_buf); // Print to terminal so bash scripts can read it
+
+        // Clean up and exit immediately
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        close(sockfd);
+        SSL_CTX_free(ctx);
+        return 0;
+    }
 
     // Subscribe to group from the config file
     char sub_msg[128];
@@ -244,7 +299,7 @@ int main() {
             break;
         }
         buffer[strcspn(buffer, "\r\n")] = 0;
-        printf("\n[Agent] Secure message received: %s\n", buffer);
+        // printf("\n[Agent] Secure message received: %s\n", buffer);
 
         char topic[64] = {0};
         char command[64] = {0};

@@ -59,6 +59,6 @@ int agent_config_load(const char* filepath, AgentConfig* config) {
     }
 
     fclose(file);
-    printf("[Agent Config] Successfully loaded from '%s'\n", filepath);
+    // printf("[Agent Config] Successfully loaded from '%s'\n", filepath);
     return 1;
 }
