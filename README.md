@@ -1,0 +1,111 @@
+# **AdMQ (Administrative Message Queue)**
+
+AdMQ is a lightweight, zero-trust, highly concurrent Pub/Sub message broker and edge-agent framework written entirely in C. It is designed for secure, centralized remote administration of distributed Linux devices, IoT nodes, and servers.  
+Instead of relying on passwords or vulnerable SSH ports, AdMQ uses **Mutual TLS (mTLS)** to strictly verify the identity of every connecting node via cryptographic certificates before they are allowed onto the message bus.
+
+## **Key Features**
+
+* **Zero-Trust mTLS Architecture:** Both the server and the agents cryptographically verify each other using OpenSSL before a single byte of command data is transmitted.  
+* **Dual-Port Enrollment:** Features a secure "Vault" port for active mTLS traffic, and a strict, one-and-done plaintext "Lobby" port to automatically sign Certificate Signing Requests (CSRs) for new agents.  
+* **Persistent Audit Logging:** Every command broadcasted and executed is logged permanently into a thread-safe SQLite database (broker\_audit.db).  
+* **Ghost Connection Sweeping:** Agents send automated background heartbeats. The broker actively sweeps and ruthlessly severs dropped connections to prevent socket exhaustion.  
+* **Live Admin CLI:** A dedicated background thread provides a live interactive prompt (Broker\> ) to query network status and publish commands without dropping background traffic.  
+* **Daemon-Ready:** Automatically detects when it is being run by systemd and safely disables the interactive CLI to run invisibly in the background.  
+* **Dynamic INI Configuration:** Fully configurable via broker.ini and agent.ini files.
+
+## **rerequisites**
+
+To build AdMQ, you need the standard C build tools, OpenSSL, and SQLite3 development headers installed on your system.  
+**Ubuntu / Debian:**  
+sudo apt-get update  
+sudo apt-get install gcc make libssl-dev libsqlite3-dev
+
+**RHEL / CentOS:**  
+sudo yum install gcc make openssl-devel sqlite-devel
+
+## **Building the Project**
+
+AdMQ includes a Makefile for streamlined building.  
+To compile both the Broker and the Agent:  
+make
+
+**Individual Build Targets:**
+
+* make message\_broker \- Compiles only the server daemon.  
+* make agent \- Compiles only the edge agent.  
+* make clean \- Wipes all compiled binaries and object (.o) files.
+
+## **onfiguration**
+
+AdMQ relies on standard .ini files for runtime configuration.
+
+### **Broker Configuration (broker.ini)**
+
+Place this in the same directory as the message\_broker executable.  
+\[network\]  
+vault\_port \= 35565  
+lobby\_port \= 35566
+
+\[security\]  
+cert\_path \= certs/server.crt  
+key\_path \= certs/server.key  
+ca\_path \= certs/ca.crt
+
+\[database\]  
+db\_path \= broker\_audit.db
+
+### **Agent Configuration (agent.ini)**
+
+Place this in the same directory as the agent executable.  
+\[network\]  
+broker\_ip \= 127.0.0.1  
+broker\_port \= 35565
+
+\[security\]  
+cert\_path \= certs/client.crt  
+key\_path \= certs/client.key  
+ca\_path \= certs/ca.crt
+
+\[agent\]  
+command\_group \= CMD-GRP-1  
+action\_dir \= ./actions
+
+## **Usage Guide**
+
+### **1\. Bootstrapping a New Agent (The Lobby)**
+
+To add a new device to the AdMQ network, generate a local private key and CSR on the edge device, and pipe it to the Broker's Lobby port (default 35566). The broker will validate the request and return a signed certificate.  
+\# Generate the key and CSR  
+openssl genrsa \-out certs/client.key 2048  
+openssl req \-new \-key certs/client.key \-out client.csr \-subj "/CN=desktop-123.local"
+
+\# Send to the Lobby and save the resulting certificate  
+(echo "ENROLL desktop-123.local"; cat client.csr) | nc \<broker\_ip\> 35566 \> certs/client.crt
+
+### **2\. Starting the Services**
+
+Start the broker first. If running interactively, you will be dropped into the Admin CLI.  
+./message\_broker
+
+Start the agent on your edge device. It will connect, perform the mTLS handshake, and listen for commands.  
+./agent
+
+### **3\. The Admin CLI**
+
+From the broker's interactive prompt, you can manage the fleet:
+
+* **View connected agents and active channels:**  
+  Broker\> STATUS
+
+* **Send a targeted command to a specific group:**  
+  Broker\> PUBLISH CMD-GRP-1 UPDATE tonight
+
+* **Send a global broadcast to all connected agents:**  
+  Broker\> PUBLISH BROADCAST REBOOT now
+
+* **Gracefully shut down the server:**  
+  Broker\> EXIT
+
+### **4\. Agent Actions**
+
+When an agent receives a command (e.g., UPDATE tonight), it looks inside its action\_dir for a matching INI file (e.g., actions/UPDATE.ini). It searches for the \[tonight\] block and safely executes the underlying shell command, reporting the success or failure back to the broker's audit log.
