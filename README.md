@@ -66,9 +66,9 @@ broker_ip = 127.0.0.1
 broker_port = 35565
 
 [security]  
-cert\_path = certs/client.crt  
-key\_path = certs/client.key  
-ca\_path = certs/ca.crt
+cert_path = certs/client.crt  
+key_path = certs/client.key  
+ca_path = certs/ca.crt
 
 [agent]  
 command_group = CMD-GRP-1  
