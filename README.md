@@ -11,7 +11,8 @@ Instead of relying on passwords or vulnerable SSH ports, AdMQ uses **Mutual TLS 
 * **Ghost Connection Sweeping:** Agents send automated background heartbeats. The broker actively sweeps and ruthlessly severs dropped connections to prevent socket exhaustion.  
 * **Live Admin CLI:** A dedicated background thread provides a live interactive prompt to query network status and publish commands without dropping background traffic.  
 * **Daemon-Ready:** Automatically detects when it is being run by systemd and safely disables the interactive CLI to run invisibly in the background.  
-* **Dynamic INI Configuration:** Fully configurable via broker.ini and agent.ini files.
+* **Role-Based Access:** Secure role-based authentication protocols prevent unauthorized access to read/write channels.  
+* **Dynamic INI Configuration:** Fully configurable via broker.ini, agent.ini, and rbac.ini files.
 
 ## **Prerequisites**
 
@@ -73,6 +74,38 @@ ca_path = certs/ca.crt
 [agent]  
 command_group = CMD-GRP-1  
 action_dir = ./actions
+```
+
+### **Role-Based Access Configuration (rbac.ini)**
+
+Place this in the same directory as the message_broker executable.  
+```
+; AdMQ Role-Based Access Control Configuration
+
+; The DEFAULT role is applied if a device is not explicitly mapped below.
+[role:DEFAULT]
+SUBSCRIBE = BROADCAST
+UNSUBSCRIBE = *
+PUBLISH =
+SET =
+
+[role:DESKTOP_AGENT]
+SUBSCRIBE = BROADCAST, CMD-GRP-1
+UNSUBSCRIBE = BROADCAST, CMD-GRP-1
+PUBLISH = agent-status
+SET = current_user, cpu_alert
+
+[role:ADMIN]
+SUBSCRIBE = *
+UNSUBSCRIBE =
+PUBLISH = *
+SET = *
+
+[map]
+admin-pc-* = ADMIN
+desktop-* = DESKTOP_AGENT
+localhost = ADMIN
+* = DEFAULT
 ```
 ## **Usage Guide**
 
