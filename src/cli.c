@@ -14,6 +14,10 @@
 #define MAX_HISTORY 50
 #define MAX_CMD_LEN 1024
 
+
+char output_header[] = "[AdMQ CLI]";
+
+
 static char history[MAX_HISTORY][MAX_CMD_LEN];
 static int history_count = 0;
 static int history_view_idx = 0;
@@ -33,7 +37,7 @@ void disableRawMode() {
 int read_char() {
     char c;
     if (read(STDIN_FILENO, &c, 1) == 1) return c;
-    return -1; 
+    return -1;
 }
 
 void add_history(const char* cmd) {
@@ -50,11 +54,11 @@ void add_history(const char* cmd) {
     history_view_idx = history_count;
 }
 
-void replace_line(char* buffer, size_t* length, size_t* cursor_idx, const char* new_text, const char* term_prompt) {
-    printf("\r\x1b[K%s%s", term_prompt, new_text); 
+void replace_line(char* buffer, size_t* length, size_t* cursor_idx, const char* new_text, const char* output_header) {
+    printf("\r\x1b[K%s%s", output_header, new_text);
     strcpy(buffer, new_text);
     *length = strlen(buffer);
-    *cursor_idx = *length; 
+    *cursor_idx = *length;
     fflush(stdout);
 }
 
@@ -230,10 +234,6 @@ void* admin_cli_thread(void* arg) {
             continue;
         }
 
-        // char cmd[32] = {0};
-        // char topic[64] = {0};
-        // char payload[800] = {0};
-
         // Tokenize the input
         char **argv = NULL;
         int argc = tokenize_command(input, &argv);
@@ -242,8 +242,8 @@ void* admin_cli_thread(void* arg) {
             if (strcmp(argv[0], "STATUS") == 0) {
                 client_manager_print_status();
                 pubsub_print_status();
-            }
-            else if (strcmp(argv[0], "PUBLISH") == 0 && argc >= 3) {
+
+            } else if (strcmp(argv[0], "PUBLISH") == 0 && argc >= 3) {
                 char topic[64];
                 char payload[800] = {0};
                 strncpy(topic, argv[1], 63);
@@ -255,9 +255,9 @@ void* admin_cli_thread(void* arg) {
                 }
 
                 pubsub_publish(topic, payload);
-                printf("[Admin] Message dispatched to topic '%s'\n", topic);
-            }
-            else if (strcmp(argv[0], "SET") == 0 && argc >= 4) {
+                printf("%s Message dispatched to topic '%s'\n", output_header, topic);
+
+            } else if (strcmp(argv[0], "SET") == 0 && argc >= 4) {
                 // Allows the admin to manually inject state via the console
                 // Usage: SET <hostname> <key> <value>
                 char target_host[128], key[64], value[256] = {0};
@@ -270,7 +270,7 @@ void* admin_cli_thread(void* arg) {
                 }
 
                 db_set_device_state(target_host, key, value);
-                printf("[Admin] State manually updated for %s.\n", target_host);
+                printf("%s State manually updated for %s.\n", output_header, target_host);
 
             } else if (strcmp(argv[0], "GET") == 0 && argc == 3) {
                 // Usage: GET <hostname> <key>
@@ -279,10 +279,39 @@ void* admin_cli_thread(void* arg) {
                 strncpy(key, argv[2], 63);
 
                 if (db_get_device_state(target_host, key, value, sizeof(value))) {
-                    printf("[Admin] %s -> %s = %s\n", target_host, key, value);
+                    printf("%s %s -> %s = %s\n", output_header, target_host, key, value);
                 } else {
-                    printf("[Admin Error] State key '%s' not found for '%s'.\n", key, target_host);
+                    printf("%s State key '%s' not found for '%s'.\n",output_header, key, target_host);
                 }
+
+            } else if (strcmp(argv[0], "SUBSCRIBE") == 0 && argc == 3) {
+                // Usage: SUBSCRIBE <hostname> <topic>
+                char target_host[128], topic[64] = {0};
+                strncpy(target_host, argv[1], 127);
+                strncpy(topic, argv[2], 63);
+
+                int client_index = client_get_index_by_hostname(target_host);
+                if (client_index >= 0) {
+                    pubsub_subscribe(client_index, topic);
+                } else {
+                    printf("%s Error: No host found with name %s.\n", output_header, target_host);
+                }
+
+
+            } else if (strcmp(argv[0], "UNSUBSCRIBE") == 0 && argc == 3) {
+                // Usage: UNSUBSCRIBE <hostname> <topic>
+                char target_host[128], topic[64] = {0};
+                strncpy(target_host, argv[1], 127);
+                strncpy(topic, argv[2], 63);
+
+                int client_index = client_get_index_by_hostname(target_host);
+                if (client_index >= 0) {
+                    pubsub_unsubscribe(client_index, topic);
+                } else {
+                    printf("%s Error: No host found with name %s.\n", output_header, target_host);
+                }
+
+
 
             } else if (strcmp(argv[0], "EXIT") == 0) {
                 printf("Shutting down CLI...\n");
@@ -291,9 +320,12 @@ void* admin_cli_thread(void* arg) {
                 exit(0);
 
             } else {
-                printf("[Admin Error] Invalid command or missing arguments.\n");
+                printf("%s Invalid command or missing arguments.\n", output_header);
                 printf("  Usage: PUBLISH <topic> <\"message\">\n");
+                printf("  Usage: SUBSCRIBE <hostname> <topic>\n");
+                printf("  Usage: UNSUBSCRIBE <hostname> <topic>\n");
                 printf("  Usage: SET <hostname> <key> <\"value\">\n");
+                printf("  Usage: GET <hostname> <key>\n");
                 printf("  Usage: STATUS\n");
                 printf("  Usage: EXIT\n");
             }

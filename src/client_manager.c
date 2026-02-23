@@ -43,6 +43,16 @@ int client_add(int fd, int conn_type) {
     return assigned_index;
 }
 
+int client_get_fd(int index) {
+    pthread_mutex_lock(&clients_lock);
+    int fd = -1;
+    if (index >= 0 && index < MAX_CLIENTS) {
+        fd = client_sockets[index];
+    }
+    pthread_mutex_unlock(&clients_lock);
+    return fd;
+}
+
 void client_set_state(int index, int state) {
     pthread_mutex_lock(&clients_lock);
     if (index >= 0 && index < MAX_CLIENTS) {
@@ -176,6 +186,18 @@ SSL* client_get_ssl(int index) {
     return ssl;
 }
 
+// Get a clients index by their hostname
+int client_get_index_by_hostname(const char* hostname) {
+    int client_index = -1;
+
+    pthread_mutex_lock(&clients_lock);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+      if (strcmp(hostname, client_hostnames[i]) == 0) { client_index = i; break; }
+    }
+
+    pthread_mutex_unlock(&clients_lock);
+    return client_index;
+}
 
 void client_buffer_append(int index, const char* data, int len) {
     // Note: We don't need a mutex here - because the client is in STATE_PROCESSING

@@ -11,6 +11,7 @@
 typedef struct {
     char name[64];
     char sub_topics[MAX_TOPICS][64];  int sub_count;  int sub_wildcard;
+    char unsub_topics[MAX_TOPICS][64];  int unsub_count;  int unsub_wildcard;
     char pub_topics[MAX_TOPICS][64];  int pub_count;  int pub_wildcard;
     char set_keys[MAX_TOPICS][64];    int set_count;  int set_wildcard;
 } Role;
@@ -29,7 +30,7 @@ static int mapping_count = 0;
 static char* trim_whitespace(char* str) {
     char* end;
     while(isspace((unsigned char)*str)) str++;
-    if(*str == 0) return str; 
+    if(*str == 0) return str;
     end = str + strlen(str) - 1;
     while(end > str && isspace((unsigned char)*end)) end--;
     end[1] = '\0';
@@ -56,7 +57,7 @@ static void parse_list(char* list_str, char dest[][64], int* count, int* wildcar
 void rbac_init(const char* filepath) {
     FILE* file = fopen(filepath, "r");
     if (!file) {
-        printf("[RBAC] Warning: Could not open '%s'. All access will be denied!\n", filepath);
+        printf("[RBAC] Warning: Could not open '%s' - no access will be provided on any channel.\n", filepath);
         return;
     }
 
@@ -99,6 +100,7 @@ void rbac_init(const char* filepath) {
                 mapping_count++;
             } else if (current_role) {
                 if (strcmp(key, "SUBSCRIBE") == 0) parse_list(val, current_role->sub_topics, &current_role->sub_count, &current_role->sub_wildcard);
+                else if (strcmp(key, "UNSUBSCRIBE") == 0) parse_list(val, current_role->unsub_topics, &current_role->unsub_count, &current_role->unsub_wildcard);
                 else if (strcmp(key, "PUBLISH") == 0) parse_list(val, current_role->pub_topics, &current_role->pub_count, &current_role->pub_wildcard);
                 else if (strcmp(key, "SET") == 0) parse_list(val, current_role->set_keys, &current_role->set_count, &current_role->set_wildcard);
             }
@@ -119,11 +121,11 @@ static int match_pattern(const char* pattern, const char* str) {
 
 // Resolves the hostname to a Role
 static Role* get_role(const char* hostname) {
-    char target_role[64] = "DEFAULT"; 
+    char target_role[64] = "DEFAULT";
     for (int i = 0; i < mapping_count; i++) {
         if (match_pattern(mappings[i].pattern, hostname)) {
             strncpy(target_role, mappings[i].role_name, 63);
-            break; 
+            break;
         }
     }
     for (int i = 0; i < role_count; i++) {
@@ -137,6 +139,14 @@ int rbac_can_subscribe(const char* hostname, const char* topic) {
     if (!r) return 0;
     if (r->sub_wildcard) return 1;
     for (int i=0; i<r->sub_count; i++) if (strcmp(r->sub_topics[i], topic) == 0) return 1;
+    return 0;
+}
+
+int rbac_can_unsubscribe(const char* hostname, const char* topic) {
+    Role* r = get_role(hostname);
+    if (!r) return 0;
+    if (r->unsub_wildcard) return 1;
+    for (int i=0; i<r->unsub_count; i++) if (strcmp(r->set_keys[i], topic) != 0) return 1;
     return 0;
 }
 

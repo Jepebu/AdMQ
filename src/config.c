@@ -63,6 +63,5 @@ int config_load(const char* filepath, BrokerConfig* config) {
     }
 
     fclose(file);
-    //printf("[Config] Successfully loaded configuration from '%s'\n", filepath);
     return 1;
 }

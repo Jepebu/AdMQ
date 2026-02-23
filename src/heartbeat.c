@@ -12,7 +12,7 @@ void* heartbeat_thread_loop(void* arg) {
         time_t now = time(NULL);
 
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            // Thread Safety: Only disconnect clients sitting idle in the select() loop.
+            // Thread Safety: Only disconnect clients sitting idle in the epoll() loop.
             // If they are actively processing a command, we skip them this round.
             if (client_get_state(i) == STATE_IDLE) {
                 time_t last_active = client_get_activity(i);

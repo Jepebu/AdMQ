@@ -43,7 +43,6 @@ void tls_init(const char* cert_path, const char* key_path, const char* ca_path) 
 
     SSL_CTX_set_verify(server_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
 
-    // printf("[TLS] OpenSSL Context initialized. mTLS strictly enforced.\n");
 }
 
 void tls_cleanup() {

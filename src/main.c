@@ -9,6 +9,10 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/epoll.h>
+#include <fcntl.h>
+#include <errno.h>
+
 
 #include "rbac.h"
 #include "config.h"
@@ -22,17 +26,28 @@
 #include "worker.h"
 #include "pubsub.h"
 
-#define THREAD_POOL_SIZE 10
 
-// Define the global queue here
-ts_queue_t task_queue;
+#define THREAD_POOL_SIZE 10 // Number of threads to use for workers.
+#define MAX_EVENTS 64 // Number of events that can be active at the same time.
+
+int epoll_fd; // Global scope so worker threads can re-arm their sockets.
+
+ts_queue_t task_queue; // Global scope for task queue.
 
 volatile sig_atomic_t keep_running = 1;
 
 void handle_sigint(int sig) {
-    printf("\n[Broker] Caught SIGINT - shutting down...\n");
+    printf("\n[AdMQ Server] Caught SIGINT - shutting down...\n");
     keep_running = 0;
 }
+
+void set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags != -1) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+}
+
 
 // Helper function for creating listening sockets.
 int create_listening_socket(int port) {
@@ -69,7 +84,7 @@ int main(int argc, char* argv[]) {
     }
 
 
-    // --- 2. Initialize Subsystems Dynamically ---
+    // Initialize subsystems dynamically
     tls_init(config.cert_path, config.key_path, config.ca_path);
     db_init(config.db_path);
     rbac_init("rbac.ini");
@@ -107,68 +122,106 @@ int main(int argc, char* argv[]) {
     setsockopt(lobby_sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)); // Reusable ports for testing
 
 
+    // Initialize epoll
+    epoll_fd = epoll_create1(0);
+    struct epoll_event ev, events[MAX_EVENTS];
+
+    // Set listening sockets to non-blocking
+    set_nonblocking(vault_sockfd);
+    set_nonblocking(lobby_sockfd);
+
+    // Add listening sockets to the epoll watch list
+    ev.events = EPOLLIN;
+    ev.data.fd = vault_sockfd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, vault_sockfd, &ev);
+
+    ev.events = EPOLLIN;
+    ev.data.fd = lobby_sockfd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, lobby_sockfd, &ev);
+
+    // epoll event loop
     while (keep_running) {
-        fd_set readfds;
-        FD_ZERO(&readfds);
+        // Wait for activity - timeout is 1000ms so the loop can check keep_running cleanly.
+        int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 1000);
 
-        // Add BOTH server sockets to the radar
-        FD_SET(vault_sockfd, &readfds);
-        FD_SET(lobby_sockfd, &readfds);
-        int max_fd = (vault_sockfd > lobby_sockfd) ? vault_sockfd : lobby_sockfd;
-
-        // Add IDLE clients
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (client_get_state(i) == STATE_IDLE) {
-                int sd = client_get_socket(i);
-                FD_SET(sd, &readfds);
-                if (sd > max_fd) max_fd = sd;
-            }
-        }
-
-        struct timeval timeout = {0, 10000};
-        int activity = select(max_fd + 1, &readfds, NULL, NULL, &timeout);
-
-        // --- Handle Interrupted System Calls (EINTR) ---
-        if (activity < 0) {
-            if (errno == EINTR) {
-                // select() was interrupted by our Ctrl+C signal.
-                // The loop will automatically break on the next iteration.
-                continue;
-            }
-            perror("select error");
+        if (nfds < 0) {
+            if (errno == EINTR) continue; // Caught SIGINT gracefully
+            perror("epoll_wait");
             break;
         }
 
-        if (activity == 0) continue;
+        for (int i = 0; i < nfds; i++) {
 
+            // Activity on vault port
+            if (events[i].data.fd == vault_sockfd) {
+                while (1) {
+                    struct sockaddr_in client_addr;
+                    socklen_t client_len = sizeof(client_addr);
+                    int client_fd = accept(vault_sockfd, (struct sockaddr*)&client_addr, &client_len);
 
-        // Handle Vault Connections
-        if (FD_ISSET(vault_sockfd, &readfds)) {
-            int new_fd = accept(vault_sockfd, NULL, NULL);
-            if (new_fd >= 0) client_add(new_fd, CONN_VAULT);
-        }
+                    if (client_fd < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        break;
+                    }
 
-        // Handle Lobby Connections
-        if (FD_ISSET(lobby_sockfd, &readfds)) {
-            int new_fd = accept(lobby_sockfd, NULL, NULL);
-            if (new_fd >= 0) client_add(new_fd, CONN_LOBBY);
-        }
+                    set_nonblocking(client_fd);
+                    int client_index = client_add(client_fd, CONN_VAULT); // Sets up SSL natively
 
-        // Handle incoming data from clients (This block stays exactly the same!)
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            int sd = client_get_socket(i);
-            if (client_get_state(i) == STATE_IDLE && sd > 0 && FD_ISSET(sd, &readfds)) {
-                client_set_state(i, STATE_PROCESSING);
-                Task* new_task = malloc(sizeof(Task));
-                new_task->client_fd = sd;
-                new_task->client_index = i;
-                queue_write(&task_queue, new_task);
+                    struct epoll_event client_ev;
+                    client_ev.events = EPOLLIN | EPOLLONESHOT;
+                    client_ev.data.ptr = (void*)(intptr_t)client_index;
+                    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &client_ev);
+                }
+            }
+            // Activity on lobby port
+            else if (events[i].data.fd == lobby_sockfd) {
+                while (1) {
+                    struct sockaddr_in client_addr;
+                    socklen_t client_len = sizeof(client_addr);
+                    int client_fd = accept(lobby_sockfd, (struct sockaddr*)&client_addr, &client_len);
+
+                    if (client_fd < 0) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        break;
+                    }
+
+                    set_nonblocking(client_fd);
+
+                    // We don't add Lobby clients to the mTLS client_manager.
+                    // Instead, we track them in epoll using a negative FD pointer.
+                    struct epoll_event lobby_ev;
+                    lobby_ev.events = EPOLLIN | EPOLLONESHOT;
+                    lobby_ev.data.ptr = (void*)(intptr_t)(-client_fd);
+                    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &lobby_ev);
+                }
+            }
+            // Activity on an existing connection (Vault or Lobby)
+            else {
+                intptr_t ptr_val = (intptr_t)events[i].data.ptr;
+
+                // Allocate the Task dynamically on the heap
+                Task* task = malloc(sizeof(Task));
+
+                if (ptr_val < 0) {
+                    // Negative pointer means this is a pending Lobby request
+                    task->client_index = -1;
+                    task->client_fd = (int)(-ptr_val);
+                } else {
+                    // Positive pointer means this is an established Vault client
+                    task->client_index = (int)ptr_val;
+                }
+
+                queue_write(&task_queue, task); // Safely pass the heap pointer
             }
         }
     }
 
-    // --- SHUTDOWN SEQUENCE ---
-    printf("\n[Broker] Shutting down...\n");
+
+
+
+
+    // SHUTDOWN SEQUENCE
+    printf("\n[AdMQ Server] Shutting down...\n");
 
     // Close network sockets
     close(vault_sockfd);
@@ -184,7 +237,7 @@ int main(int argc, char* argv[]) {
     tls_cleanup();
     cli_cleanup();
 
-    printf("[Broker] Shutdown complete.\n");
+    printf("[AdMQ Server] Shutdown complete.\n");
     return 0;
 
 }

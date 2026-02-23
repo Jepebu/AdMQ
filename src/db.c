@@ -30,7 +30,7 @@ void db_init(const char* filepath) {
         exit(1);
     }
 
-    // --- NEW: Device State Table ---
+    // Device State Table
     // PRIMARY KEY (hostname, key) ensures we overwrite old values instead of making duplicates
     const char *sql_create_state_table =
         "CREATE TABLE IF NOT EXISTS device_state ("
@@ -46,9 +46,6 @@ void db_init(const char* filepath) {
         exit(1);
     }
 
-
-
-    // printf("[DB] SQLite Audit Database initialized at '%s'\n", filepath);
 }
 
 void db_set_device_state(const char* hostname, const char* key, const char* value) {

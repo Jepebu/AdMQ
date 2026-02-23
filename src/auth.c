@@ -19,7 +19,6 @@ int auth_verify_identity(int client_fd, const char* claimed_hostname) {
     }
 
     inet_ntop(AF_INET, &peer_addr.sin_addr, peer_ip, sizeof(peer_ip));
-    // printf("Auth: Socket IP is %s. Verifying against claim '%s'...\n", peer_ip, claimed_hostname);
 
     // Perform DNS Lookup on the claimed hostname
     struct addrinfo hints, *res, *p;
@@ -71,7 +70,6 @@ int auth_verify_mtls(int client_fd, SSL* ssl, char* out_cn, int max_len) {
     }
 
     X509_free(cert);
-    // printf("Auth: Successfully extracted identity '%s' from TLS Certificate.\n", out_cn);
 
     // Pass the extracted identity straight into our existing DNS/IP validator!
     return auth_verify_identity(client_fd, out_cn);

@@ -5,10 +5,10 @@
 
 // Helper to add an argument to the dynamic argv list
 static void add_arg(char ***argv, int *argc, const char *buffer) {
-    *argv = realloc(*argv, sizeof(char*) * (*argc + 2)); 
-    (*argv)[*argc] = strdup(buffer); 
+    *argv = realloc(*argv, sizeof(char*) * (*argc + 2));
+    (*argv)[*argc] = strdup(buffer);
     (*argc)++;
-    (*argv)[*argc] = NULL; 
+    (*argv)[*argc] = NULL;
 }
 
 int tokenize_command(char *input_str, char ***argv_ptr) {
@@ -67,13 +67,13 @@ int tokenize_command(char *input_str, char ***argv_ptr) {
 
             if (current_char == '&' && input_str[i+1] == '&') {
                 add_arg(argv_ptr, &argc, "&&");
-                i++; 
+                i++;
             } else if (current_char == '|' && input_str[i+1] == '|') {
                 add_arg(argv_ptr, &argc, "||");
-                i++; 
+                i++;
             } else if (current_char == '>' && input_str[i+1] == '>') {
                 add_arg(argv_ptr, &argc, ">>");
-                i++; 
+                i++;
             } else {
                 char op_str[2] = {current_char, '\0'};
                 add_arg(argv_ptr, &argc, op_str);

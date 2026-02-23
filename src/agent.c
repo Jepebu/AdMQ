@@ -14,6 +14,7 @@
 #include <pthread.h>
 
 #include "agent_config.h"
+#include "tokenizer.h"
 
 volatile sig_atomic_t keep_running = 1;
 
@@ -239,9 +240,8 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // printf("Agent securely connected to broker via mTLS.\n");
 
-    // --- One-Shot Mode Execution ---
+    // One-Shot mode execution
     if (oneshot_mode) {
         char msg[512];
 
@@ -281,8 +281,10 @@ int main(int argc, char* argv[]) {
     pthread_create(&ping_tid, NULL, agent_ping_thread, (void*)ssl);
     pthread_detach(ping_tid);
 
+    printf("[AdMQ Agent] Connected to AdMQ server and starting main loop.\n");
+
     char buffer[1024];
-    // Change the loop condition
+    // Main loop for persistent connection
     while (keep_running) {
         memset(buffer, 0, sizeof(buffer));
 
@@ -295,46 +297,61 @@ int main(int argc, char* argv[]) {
                 break;
             }
             // Otherwise, the broker actually died or the network dropped.
-            printf("Broker disconnected. Agent shutting down.\n");
+            printf("[AdMQ Agent] Disconnected from server - shutting down.\n");
             break;
         }
         buffer[strcspn(buffer, "\r\n")] = 0;
-        // printf("\n[Agent] Secure message received: %s\n", buffer);
 
         char topic[64] = {0};
         char command[64] = {0};
         char argument[128] = {0};
 
-        if (sscanf(buffer, "[%63[^]]] %63s %127[^\n]", topic, command, argument) >= 3) {
+        sscanf(buffer, "[%63[^]]] %63s %127[^\n]", topic, command, argument);
 
-            ActionConfig act_config = {0};
-            if (parse_ini_action(config.action_dir, command, argument, &act_config)) {
 
-                char exec_cmd[1024];
-                snprintf(exec_cmd, sizeof(exec_cmd), "%s %s %s", act_config.cmd, act_config.target, act_config.arguments);
+        if (strcmp(topic, config.command_group) == 0) { // If this is a command from our command group, we execute it
+            if (strlen(topic) > 0 && strlen(command) > 0 && strlen(argument) >= 0) { // Also make sure we have at least topic and command values
 
-                pid_t pid = fork();
+                ActionConfig act_config = {0};
+                if (parse_ini_action(config.action_dir, command, argument, &act_config)) {
 
-                if (pid == 0) {
-                    execl("/bin/sh", "sh", "-c", exec_cmd, (char *)NULL);
-                    perror("execl failed");
-                    exit(1);
-                } else if (pid > 0) {
+                   char exec_cmd[1024];
+                   snprintf(exec_cmd, sizeof(exec_cmd), "%s %s %s", act_config.cmd, act_config.target, act_config.arguments);
+
+                    // Tokenize the string and use execvp()
+                    char **argv_list = NULL;
+                    int argc_count = tokenize_command(exec_cmd, &argv_list);
+
+                    if (argc_count > 0) {
+                        pid_t pid = fork();
+
+                        if (pid == 0) {
+                            // execvp bypasses /bin/sh completely to prevent shell injection
+                            execvp(argv_list[0], argv_list);
+                            perror("execvp failed"); // Only prints if the command doesn't exist
+                            exit(1);
+                        } else if (pid > 0) {
+                            char report[512];
+                            snprintf(report, sizeof(report),
+                                 "PUBLISH agent-status SUCCESS: Task '%s' started (PID %d).\n",
+                                 command, pid);
+                            SSL_write(ssl, report, strlen(report));
+                        }
+                    }
+
+                    // Free the memory allocated by the tokenizer
+                    free_tokens(argv_list, argc_count);
+
+                } else {
                     char report[512];
                     snprintf(report, sizeof(report),
-                             "PUBLISH agent-status SUCCESS: Task '%s %s' started (PID %d).\n",
-                             command, argument, pid);
-
-                    // Send the status report
+                             "PUBLISH agent-status ERROR: Unknown action '%s %s'\n",
+                             command, argument);
                     SSL_write(ssl, report, strlen(report));
                 }
-            } else {
-                char report[512];
-                snprintf(report, sizeof(report),
-                         "PUBLISH agent-status ERROR: Unknown action '%s %s'\n",
-                         command, argument);
-                SSL_write(ssl, report, strlen(report));
             }
+        } else if (strlen(topic) > 0 && strlen(command) > 0) { // If it isn't from the command queue just print it
+            printf("\n[AdMQ Agent] Message received on channel '%s': %s %s\n", topic, command, argument);
         }
     }
 
@@ -345,7 +362,7 @@ int main(int argc, char* argv[]) {
     close(sockfd);
     SSL_CTX_free(ctx);
 
-    printf("[Agent] Shutdown complete.\n");
+    printf("[AdMQ Agent] Shutdown complete.\n");
     return 0;
 }
 

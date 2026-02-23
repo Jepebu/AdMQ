@@ -56,7 +56,6 @@ void pubsub_subscribe(int client_index, const char* topic_name) {
         if (!already_subscribed) {
             target_topic->subscribers[target_topic->sub_count] = client_index;
             target_topic->sub_count++;
-            // printf("Client %d subscribed to '%s'\n", client_index, topic_name);
         }
     }
 
@@ -81,7 +80,6 @@ void pubsub_unsubscribe(int client_index, const char* topic_name) {
                     }
 
                     topics[i].sub_count--; // Shrink the active subscriber count
-                    // printf("Client %d unsubscribed from '%s'\n", client_index, topic_name);
                     break; // We removed the client, no need to keep checking this topic's list
                 }
             }

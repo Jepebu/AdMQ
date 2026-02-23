@@ -12,7 +12,7 @@ AGENT_BIN = agent
 
 # --- Source Files ---
 BROKER_SRCS = src/main.c src/ts_queue.c src/client_manager.c src/worker.c src/pubsub.c src/auth.c src/tls.c src/enroll.c src/cli.c src/heartbeat.c src/db.c src/config.c src/tokenizer.c src/rbac.c
-AGENT_SRCS = src/agent.c src/agent_config.c
+AGENT_SRCS = src/agent.c src/agent_config.c src/tokenizer.c
 
 # --- Object Files ---
 BROKER_OBJS = $(BROKER_SRCS:.c=.o)
