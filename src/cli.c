@@ -1,4 +1,5 @@
 #include "cli.h"
+#include "db.h"
 #include "pubsub.h"
 #include "client_manager.h"
 #include "tokenizer.h"
@@ -229,9 +230,9 @@ void* admin_cli_thread(void* arg) {
             continue;
         }
 
-        char cmd[32] = {0};
-        char topic[64] = {0};
-        char payload[800] = {0};
+        // char cmd[32] = {0};
+        // char topic[64] = {0};
+        // char payload[800] = {0};
 
         // Tokenize the input
         char **argv = NULL;

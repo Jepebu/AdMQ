@@ -19,7 +19,7 @@ void* heartbeat_thread_loop(void* arg) {
 
                 // If they haven't spoken in 60 seconds, cut them loose.
                 if (now - last_active > 60) {
-                    printf("\n[Heartbeat] Disconnecting ID %d. Disconnecting...\nBroker> ", i);
+                    printf("\n[Heartbeat] Disconnecting ID %d. Disconnecting...\nadmq> ", i);
                     fflush(stdout); // Redraw the CLI prompt properly
 
                     pubsub_unsubscribe_all(i);

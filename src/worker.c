@@ -5,6 +5,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include "rbac.h"
 #include "db.h"
 #include "enroll.h"
 #include "tls.h"
@@ -120,40 +121,46 @@ void* worker_thread(void* arg) {
 
                         } else if (parsed_items == 3 && strcmp(command, "SET") == 0) {
 
-                             // 1. Get the securely verified identity of the sender
-                             char sender_name[128];
-                             client_get_hostname(task->client_index, sender_name, sizeof(sender_name));
+                            char sender_name[128];
+                            client_get_hostname(task->client_index, sender_name, sizeof(sender_name));
+                            // Check RBAC Permissions
+                            if (!rbac_can_set(sender_name, topic)) {
+                                SSL_write(ssl, "ERROR: Access denied.\n", 30);
+                                printf("[Worker %d] RBAC Blocked %s from setting state '%s'\n", my_id, sender_name, topic);
+                                continue;
+                            }
 
-                             // 2. Update the state in the database
+
+                             // Update the state in the database
                              // (Here, 'topic' acts as the Key, and 'payload' acts as the Value)
                              db_set_device_state(sender_name, topic, payload);
 
-                             // 3. Acknowledge the update
+                             // Acknowledge the update
                              char ack[128];
                              snprintf(ack, sizeof(ack), "SUCCESS: State '%s' updated.\n", topic);
                              SSL_write(ssl, ack, strlen(ack));
 
-                             //printf("[Worker %d] State updated for %s: %s = %s\n", my_id, sender_name, topic, payload);
 
                        } else if (parsed_items == 2 && strcmp(command, "GET") == 0) {
 
-                             // 1. Get the securely verified identity of the sender
+                             // Get the securely verified identity of the sender
                              char sender_name[128];
                              client_get_hostname(task->client_index, sender_name, sizeof(sender_name));
 
                              char value[256] = {0};
                              char response[512];
 
-                             // 2. Look up the key specifically for this sender
+                             // Look up the key specifically for this sender
                              if (db_get_device_state(sender_name, topic, value, sizeof(value))) {
                                  snprintf(response, sizeof(response), "VALUE: %s=%s\n", topic, value);
                              } else {
                                  snprintf(response, sizeof(response), "ERROR: Key '%s' not found.\n", topic);
                              }
 
-                             // 3. Send the result back to the agent script
+                             db_log_message(sender_name, topic, payload);
+
+                             // Send the result back to the agent script
                              SSL_write(ssl, response, strlen(response));
-                             // printf("[Worker %d] State queried by %s: %s\n", my_id, sender_name, topic);
 
 
                         } else if (parsed_items >= 1 && strcmp(command, "PING") == 0) {
@@ -164,8 +171,17 @@ void* worker_thread(void* arg) {
                             continue; // Just consume the pong, timestamp is already updated
 
                         } else if (parsed_items >= 2 && strcmp(command, "SUBSCRIBE") == 0) {
+                            char sender_name[128];
+                            client_get_hostname(task->client_index, sender_name, sizeof(sender_name));
+                            // Check RBAC Permissions
+                            if (!rbac_can_subscribe(sender_name, topic)) {
+                                SSL_write(ssl, "ERROR: Access denied.\n", 30);
+                                printf("[Worker %d] RBAC Blocked %s from subscribing to %s\n", my_id, sender_name, topic);
+                                continue;
+                            }
+
+                            db_log_message(sender_name, topic, payload);
                             pubsub_subscribe(task->client_index, topic);
-                            // snprintf(response, sizeof(response), "Subscribed to %s\n", topic);
                             SSL_write(ssl, response, strlen(response));
 
                         } else if (parsed_items >= 2 && strcmp(command, "UNSUBSCRIBE") == 0) {
@@ -174,13 +190,21 @@ void* worker_thread(void* arg) {
                             SSL_write(ssl, response, strlen(response));
 
                         } else if (parsed_items == 3 && strcmp(command, "PUBLISH") == 0) {
+                            char sender_name[128];
+                            client_get_hostname(task->client_index, sender_name, sizeof(sender_name));
+                            // Check RBAC Permissions
+                            if (!rbac_can_publish(sender_name, topic)) {
+                                SSL_write(ssl, "ERROR: Access denied.\n", 30);
+                                printf("[Worker %d] RBAC Blocked %s from publishing to %s\n", my_id, sender_name, topic);
+                                continue;
+                            }
+
+
+                            db_log_message(sender_name, topic, payload);
                             pubsub_publish(topic, payload);
-                            // snprintf(response, sizeof(response), "Published to %s\n", topic);
                             SSL_write(ssl, response, strlen(response));
 
                             // Database logging
-                            char sender_name[128];
-                            client_get_hostname(task->client_index, sender_name, sizeof(sender_name));
                             db_log_message(sender_name, topic, payload);
 
                         } else {

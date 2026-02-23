@@ -10,6 +10,7 @@
 #include <signal.h>
 #include <errno.h>
 
+#include "rbac.h"
 #include "config.h"
 #include "heartbeat.h"
 #include "db.h"
@@ -71,6 +72,7 @@ int main(int argc, char* argv[]) {
     // --- 2. Initialize Subsystems Dynamically ---
     tls_init(config.cert_path, config.key_path, config.ca_path);
     db_init(config.db_path);
+    rbac_init("rbac.ini");
 
 
     queue_init(&task_queue);
