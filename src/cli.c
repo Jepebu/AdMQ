@@ -14,9 +14,7 @@
 #define MAX_HISTORY 50
 #define MAX_CMD_LEN 1024
 
-
 char output_header[] = "[AdMQ CLI]";
-
 
 static char history[MAX_HISTORY][MAX_CMD_LEN];
 static int history_count = 0;
@@ -40,6 +38,8 @@ int read_char() {
     return -1;
 }
 
+
+// Adds a char buffer to the global history storage
 void add_history(const char* cmd) {
     if (strlen(cmd) == 0) return;
     if (history_count == MAX_HISTORY) {
@@ -54,23 +54,20 @@ void add_history(const char* cmd) {
     history_view_idx = history_count;
 }
 
-void replace_line(char* buffer, size_t* length, size_t* cursor_idx, const char* new_text, const char* output_header) {
-    printf("\r\x1b[K%s%s", output_header, new_text);
+void replace_line(char* buffer, size_t* length, size_t* cursor_idx, const char* new_text, const char* prompt) {
+    printf("\r\x1b[K%s%s", prompt, new_text);
     strcpy(buffer, new_text);
     *length = strlen(buffer);
     *cursor_idx = *length;
     fflush(stdout);
 }
 
-
-// Interactive command line handler
 char* get_input(const char* prompt) {
   printf("%s", prompt);
   fflush(stdout);
 
-  enableRawMode(); // Turn off buffering/echo
+  enableRawMode();
 
-  // Allocate a buffer for the user's input
   size_t bufsize = 1024;
   size_t length = 0;
   size_t cursor_idx = 0;
@@ -81,147 +78,108 @@ char* get_input(const char* prompt) {
     c = read_char();
     if (c == -1) { break; }
 
-    // ---------------------------------------------------------
-    // LINUX / MACOS LOGIC
-    // ---------------------------------------------------------
       if (c == '\033') { // Escape sequence
         char seq[2];
-        // Read the next two bytes immediately
         if (read(STDIN_FILENO, &seq[0], 1) == 0) return buffer;
         if (read(STDIN_FILENO, &seq[1], 1) == 0) return buffer;
 
         if (seq[0] == '[') { // Its an arrow key
           switch (seq[1]) {
-
-            case 'A': // UP ARROW
+            case 'A': // Up arrow
               if (history_view_idx > 0) {
-                history_view_idx--; // Move backwards
+                history_view_idx--;
                 replace_line(buffer, &length, &cursor_idx, history[history_view_idx], prompt);
               }
               break;
-
-            case 'B': // DOWN ARROW
+            case 'B': // Down arrow
               if (history_view_idx < history_count) {
-                history_view_idx++; // Move fowards
+                history_view_idx++;
 
                 if (history_view_idx == history_count) {
-                  // We moved past the last history item, go to empty line.
+                  // We moved past the last history item -> go to empty line
                   replace_line(buffer, &length, &cursor_idx, "", prompt);
                 }
                 else {
-                  // Show next history item
+                  // Show next item in history
                   replace_line(buffer, &length, &cursor_idx, history[history_view_idx], prompt);
                 }
               }
               break;
-
-            case 'D': // LEFT ARROW
+            case 'D': // Left arrow
               if (cursor_idx > 0) {
                 cursor_idx--;
-                printf("\033[D"); // ANSI code to move cursor left visually
+                printf("\033[D");
                 fflush(stdout);
               }
               break;
-            case 'C': // RIGHT ARROW
+            case 'C': // Right arrow
               if (cursor_idx < length) {
                 cursor_idx++;
-                printf("\033[C"); // ANSI code to move cursor right visually
+                printf("\033[C");
                 fflush(stdout);
               }
               break;
           }
         }
-        continue; // Continue so the \033 doesn't get added to the output buffer.
+        continue; // Continue so the \033 doesn't make it to the output buffer
     }
 
-
-      /* [UNIX ENTER]
-         Reset the cursor_idx and length, move to
-         the next line, and break the loop.
-      */
-      if ((c == '\n' || c == '\r') && buffer[length] != '\\') { // User hit Enter
+      if ((c == '\n' || c == '\r') && buffer[length] != '\\') { // Enter key
           buffer[length] = '\0';
-          printf("\r\n"); // Move to next line visually
+          printf("\r\n");
           break;
       }
-
-      /* [UNIX BACKSPACE]
-         We do some left buffer shifting, then reprint.
-      */
-      else if (c == 127) {
-        if (cursor_idx > 0) { // Make sure we aren't at the start of the line.
+      else if (c == 127) { // Backspace
+        if (cursor_idx > 0) {
 
           if (cursor_idx < length) {
-            memmove(&buffer[cursor_idx - 1], &buffer[cursor_idx], length - cursor_idx); // Shift buffer left one
+            memmove(&buffer[cursor_idx - 1], &buffer[cursor_idx], length - cursor_idx);
           }
-
 
           cursor_idx--;
           length--;
           buffer[length] = '\0';
-          printf("\b"); // Visual backspace
-          printf("%s", &buffer[cursor_idx]); // Print the tail
-          printf(" "); // Erase ghost char
+          printf("\b");
+          printf("%s", &buffer[cursor_idx]);
+          printf(" ");
 
 
-          size_t steps_back = (length - cursor_idx) + 1;  //
-          for (size_t i = 0; i < steps_back; i++) {       //
-            printf("\033[D");                             //  Fix cursor position
-          }                                               //
+          size_t steps_back = (length - cursor_idx) + 1;
+          for (size_t i = 0; i < steps_back; i++) {
+            printf("\033[D");
+          }
 
           fflush(stdout);
         }
       }
-
-    /* [NORMAL TYPING - MIDDLE OF STRING]
-       We do some right buffer shifting and reprinting.
-    */
-    else if (cursor_idx < length) {
-      // [#1] Shift the memory.
+    else if (cursor_idx < length) { // Typing in the middle of the line
       memmove(&buffer[cursor_idx + 1], &buffer[cursor_idx], length - cursor_idx);
-
-      // Insert the new char
       buffer[cursor_idx] = c;
-      length++; // Total string got longer
-
-
-      // [#2] Redraw the visuals.
+      length++;
       printf("%c", c);
       printf("%s", &buffer[cursor_idx + 1]);
 
-
-      // [#3] Fix the cursor position.
       size_t steps_back = length - (cursor_idx + 1);
       for (size_t i = 0; i < steps_back; i++) {
           printf("\033[D");
       }
-
-      // Increment our logical cursor position
       cursor_idx++;
-
-      // Flush stdout
       fflush(stdout);
     }
-
-    // [NORMAL TYPING - END OF STRING]
-    // Nothing fancy here, just append it and print it.
-    else {
+    else { // Typing at the end of the line
       buffer[cursor_idx] = c;
       length++;
-      printf("%c", c); // Manual echo
+      printf("%c", c);
       cursor_idx++;
       fflush(stdout);
     }
-
-    // TODO: Add buffer resizing logic here if position >= bufsize
   }
 
-  disableRawMode(); // Restore terminal
+  disableRawMode();
   add_history(buffer);
-  return buffer; // Return the pointer
+  return buffer;
 }
 
-// --- THE THREAD LOOP ---
 void* admin_cli_thread(void* arg) {
     // Give the server a second to print its startup logs before showing the prompt
     usleep(500000);
@@ -234,21 +192,21 @@ void* admin_cli_thread(void* arg) {
             continue;
         }
 
-        // Tokenize the input
         char **argv = NULL;
         int argc = tokenize_command(input, &argv);
 
         if (argc > 0) {
             if (strcmp(argv[0], "STATUS") == 0) {
+                // Prints a status message
                 client_manager_print_status();
                 pubsub_print_status();
 
             } else if (strcmp(argv[0], "PUBLISH") == 0 && argc >= 3) {
+                // Publishes to a specific channel
                 char topic[64];
                 char payload[800] = {0};
                 strncpy(topic, argv[1], 63);
 
-                // Reconstruct the payload (handles both quoted and unquoted messages)
                 for (int i = 2; i < argc; i++) {
                     strcat(payload, argv[i]);
                     if (i < argc - 1) strcat(payload, " ");
@@ -258,8 +216,7 @@ void* admin_cli_thread(void* arg) {
                 printf("%s Message dispatched to topic '%s'\n", output_header, topic);
 
             } else if (strcmp(argv[0], "SET") == 0 && argc >= 4) {
-                // Allows the admin to manually inject state via the console
-                // Usage: SET <hostname> <key> <value>
+                // Sets a specific key/value pair in the database
                 char target_host[128], key[64], value[256] = {0};
                 strncpy(target_host, argv[1], 127);
                 strncpy(key, argv[2], 63);
@@ -273,7 +230,7 @@ void* admin_cli_thread(void* arg) {
                 printf("%s State manually updated for %s.\n", output_header, target_host);
 
             } else if (strcmp(argv[0], "GET") == 0 && argc == 3) {
-                // Usage: GET <hostname> <key>
+                // Acquires the value from a specific key in the database
                 char target_host[128], key[64], value[256] = {0};
                 strncpy(target_host, argv[1], 127);
                 strncpy(key, argv[2], 63);
@@ -285,37 +242,39 @@ void* admin_cli_thread(void* arg) {
                 }
 
             } else if (strcmp(argv[0], "SUBSCRIBE") == 0 && argc == 3) {
-                // Usage: SUBSCRIBE <hostname> <topic>
+                // Subscribes a specific hostname to a topic
                 char target_host[128], topic[64] = {0};
                 strncpy(target_host, argv[1], 127);
                 strncpy(topic, argv[2], 63);
 
-                int client_index = client_get_index_by_hostname(target_host);
-                if (client_index >= 0) {
-                    pubsub_subscribe(client_index, topic);
+                // Leverage Map to look up hostname queries directly
+                Client* c = client_get_and_lock_by_hostname(target_host);
+                if (c) {
+                    int fd = c->fd;
+                    client_unlock(c);
+                    pubsub_subscribe(fd, topic);
                 } else {
-                    printf("%s Error: No host found with name %s.\n", output_header, target_host);
+                    printf("%s Error: No active connection found under %s.\n", output_header, target_host);
                 }
-
 
             } else if (strcmp(argv[0], "UNSUBSCRIBE") == 0 && argc == 3) {
-                // Usage: UNSUBSCRIBE <hostname> <topic>
+                // Unsubscribes a specific hostname from a topic
                 char target_host[128], topic[64] = {0};
                 strncpy(target_host, argv[1], 127);
                 strncpy(topic, argv[2], 63);
 
-                int client_index = client_get_index_by_hostname(target_host);
-                if (client_index >= 0) {
-                    pubsub_unsubscribe(client_index, topic);
+                Client* c = client_get_and_lock_by_hostname(target_host);
+                if (c) {
+                    int fd = c->fd;
+                    client_unlock(c);
+                    pubsub_unsubscribe(fd, topic);
                 } else {
-                    printf("%s Error: No host found with name %s.\n", output_header, target_host);
+                    printf("%s Error: No active connection found under %s.\n", output_header, target_host);
                 }
-
-
 
             } else if (strcmp(argv[0], "EXIT") == 0) {
                 printf("Shutting down CLI...\n");
-                free_tokens(argv, argc); // Clean up before exit
+                free_tokens(argv, argc);
                 free(input);
                 exit(0);
 
@@ -331,7 +290,6 @@ void* admin_cli_thread(void* arg) {
             }
         }
 
-        // Clean up memory
         free_tokens(argv, argc);
         free(input);
     }
@@ -343,12 +301,10 @@ void cli_init() {
     if (pthread_create(&cli_tid, NULL, admin_cli_thread, NULL) != 0) {
         perror("Failed to start CLI thread");
     }
-    // We detach it so we don't have to join it later
     pthread_detach(cli_tid);
 }
 
-
 void cli_cleanup() {
-    disableRawMode(); // Restores the terminal's ECHO and ICANON flags
+    disableRawMode();
     printf("[CLI] Terminal state restored.\n");
 }

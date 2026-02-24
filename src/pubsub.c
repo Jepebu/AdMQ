@@ -1,5 +1,6 @@
 #include "pubsub.h"
-#include "client_manager.h" // We need this to get the sockets to write to
+#include "client_manager.h"
+
 #include <openssl/ssl.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,12 +22,10 @@ void pubsub_init() {
     topic_count = 0;
 }
 
-void pubsub_subscribe(int client_index, const char* topic_name) {
+void pubsub_subscribe(int client_fd, const char* topic_name) {
     pthread_mutex_lock(&pubsub_lock);
-
     Topic* target_topic = NULL;
 
-    // Check if the topic already exists
     for (int i = 0; i < topic_count; i++) {
         if (strcmp(topics[i].name, topic_name) == 0) {
             target_topic = &topics[i];
@@ -34,7 +33,6 @@ void pubsub_subscribe(int client_index, const char* topic_name) {
         }
     }
 
-    // If it doesn't exist, create it (if we have space)
     if (target_topic == NULL && topic_count < MAX_TOPICS) {
         target_topic = &topics[topic_count];
         strncpy(target_topic->name, topic_name, 63);
@@ -43,71 +41,56 @@ void pubsub_subscribe(int client_index, const char* topic_name) {
         topic_count++;
     }
 
-    // Add the client to the topic (avoiding duplicates)
     if (target_topic != NULL && target_topic->sub_count < MAX_SUBSCRIBERS_PER_TOPIC) {
         int already_subscribed = 0;
         for (int i = 0; i < target_topic->sub_count; i++) {
-            if (target_topic->subscribers[i] == client_index) {
+            if (target_topic->subscribers[i] == client_fd) {
                 already_subscribed = 1;
                 break;
             }
         }
-
         if (!already_subscribed) {
-            target_topic->subscribers[target_topic->sub_count] = client_index;
+            target_topic->subscribers[target_topic->sub_count] = client_fd;
             target_topic->sub_count++;
         }
     }
-
     pthread_mutex_unlock(&pubsub_lock);
 }
 
-
-void pubsub_unsubscribe(int client_index, const char* topic_name) {
+void pubsub_unsubscribe(int client_fd, const char* topic_name) {
     pthread_mutex_lock(&pubsub_lock);
 
-    // Find the requested topic
     for (int i = 0; i < topic_count; i++) {
         if (strcmp(topics[i].name, topic_name) == 0) {
-
-            // Found the topic! Now find the client in the subscriber list
             for (int j = 0; j < topics[i].sub_count; j++) {
-                if (topics[i].subscribers[j] == client_index) {
-
-                    // Found the client! Shift the rest of the array down to fill the gap
+                if (topics[i].subscribers[j] == client_fd) {
                     for (int k = j; k < topics[i].sub_count - 1; k++) {
                         topics[i].subscribers[k] = topics[i].subscribers[k + 1];
                     }
-
-                    topics[i].sub_count--; // Shrink the active subscriber count
-                    break; // We removed the client, no need to keep checking this topic's list
+                    topics[i].sub_count--;
+                    break;
                 }
             }
-            break; // We found the topic and handled it, no need to check other topics
+            break;
         }
     }
-
     pthread_mutex_unlock(&pubsub_lock);
 }
 
-
-void pubsub_unsubscribe_all(int client_index) {
+void pubsub_unsubscribe_all(int client_fd) {
     pthread_mutex_lock(&pubsub_lock);
 
-    // Loop through all topics and remove this client if they are in the list
     for (int i = 0; i < topic_count; i++) {
         for (int j = 0; j < topics[i].sub_count; j++) {
-            if (topics[i].subscribers[j] == client_index) {
-                // Shift the rest of the array down to fill the gap
+            if (topics[i].subscribers[j] == client_fd) {
                 for (int k = j; k < topics[i].sub_count - 1; k++) {
                     topics[i].subscribers[k] = topics[i].subscribers[k + 1];
                 }
                 topics[i].sub_count--;
-                break; // Found and removed from this topic, move to the next topic
+                break;
             }
         }
     }
-
     pthread_mutex_unlock(&pubsub_lock);
 }
 
@@ -120,33 +103,26 @@ void pubsub_publish(const char* topic_name, const char* message) {
 
     for (int i = 0; i < topic_count; i++) {
         if (strcmp(topics[i].name, topic_name) == 0) {
-
-            // Found the topic - send the message to all subscribers.
             for (int j = 0; j < topics[i].sub_count; j++) {
-                int client_idx = topics[i].subscribers[j];
+                int client_fd = topics[i].subscribers[j];
 
-                // Get the SSL tunnel instead
-                SSL* ssl = client_get_ssl(client_idx);
-
-                if (ssl != NULL) {
-                    SSL_write(ssl, formatted_msg, msg_len);
-                } else {
-                    // Fallback just in case a client isn't fully TLS-established yet
-                    int fd = client_get_socket(client_idx);
-                    if (fd > 0) {
-                        write(fd, formatted_msg, msg_len);
+                // Safely lock the specific user struct inside the publication loop
+                Client* c = client_get_and_lock_by_fd(client_fd);
+                if (c != NULL) {
+                    if (c->ssl != NULL) {
+                        SSL_write(c->ssl, formatted_msg, msg_len);
+                    } else if (c->fd > 0) {
+                        write(c->fd, formatted_msg, msg_len);
                     }
+                    client_unlock(c);
                 }
             }
             break;
         }
     }
-
     pthread_mutex_unlock(&pubsub_lock);
 }
 
-
-// Add this function at the bottom of the file
 void pubsub_print_status() {
     pthread_mutex_lock(&pubsub_lock);
     printf("\n=== ACTIVE TOPICS ===\n");
@@ -156,7 +132,14 @@ void pubsub_print_status() {
             count++;
             printf("  [%s]: ", topics[i].name);
             for (int j = 0; j < topics[i].sub_count; j++) {
-                printf("ID:%d ", topics[i].subscribers[j]);
+                // Determine Hostname cleanly if possible
+                Client* c = client_get_and_lock_by_fd(topics[i].subscribers[j]);
+                if (c) {
+                    printf("%s ", (strlen(c->hostname) > 0) ? c->hostname : "Pending");
+                    client_unlock(c);
+                } else {
+                    printf("FD:%d ", topics[i].subscribers[j]);
+                }
             }
             printf("\n");
         }
