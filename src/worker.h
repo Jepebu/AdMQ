@@ -8,7 +8,7 @@ extern ts_queue_t task_queue;
 
 typedef struct {
     int client_fd;
-    int client_index;
+    int conn_type;
 } Task;
 
 void* worker_thread(void* arg);

@@ -1,59 +1,47 @@
 #ifndef CLIENT_MANAGER_H
 #define CLIENT_MANAGER_H
 
-#define MAX_CLIENTS 100
-
 #define STATE_DISCONNECTED 0
 #define STATE_IDLE 1
-#define STATE_PROCESSING 2
 
 #define CONN_VAULT 0
 #define CONN_LOBBY 1
 
 #include <openssl/ssl.h>
+#include <pthread.h>
 #include <time.h>
 
-// Initialize the manager
+// Client struct holding all individual device information and its internal mutex
+typedef struct Client {
+    int fd;
+    int state;
+    int conn_type;
+    int auth_status;
+    SSL* ssl;
+    char hostname[128];
+    time_t last_activity;
+
+    char buffer[2048];
+    int buffer_len;
+
+    pthread_mutex_t lock;
+} Client;
+
 void client_manager_init();
+void client_add(int fd, int conn_type);
+void client_remove(int fd);
 
-// Add a client
-int client_add(int fd, int conn_type);
+// These retrieve a pointer to the client and automatically lock c->lock for safe multithreaded operations
+Client* client_get_and_lock_by_fd(int fd);
+Client* client_get_and_lock_by_hostname(const char* hostname);
+void client_unlock(Client* c);
 
-// Remove a client
-void client_remove(int index);
-
-
-// Thread-safe getter/setter methods
-
-
-int client_get_fd(int index);
-
-void client_set_state(int index, int state);
-int client_get_state(int index);
-
-void client_buffer_append(int index, const char* data, int len);
-int client_buffer_extract_line(int index, char* out_message, int max_len);
-
-int client_get_auth(int index);
-void client_set_auth(int index, int status);
-
-void client_set_ssl(int index, SSL* ssl);
-SSL* client_get_ssl(int index);
-
-void client_set_hostname(int index, const char* hostname);
-void client_get_hostname(int index, char* out_name, int max_len);
-
-void client_update_activity(int index);
-time_t client_get_activity(int index);
-
-int client_get_socket(int index);
-
-int client_get_conn_type(int index);
-
-int client_get_index_by_hostname(const char* hostname);
-
-// Method for printing status info
+void client_set_hostname(int fd, const char* hostname);
+void client_manager_sweep_inactive(int timeout_seconds);
 void client_manager_print_status();
 
+// Buffer management (should only be called when c->lock is held)
+void client_buffer_append(Client* c, const char* data, int len);
+int client_buffer_extract_line(Client* c, char* out_message, int max_len);
 
 #endif
